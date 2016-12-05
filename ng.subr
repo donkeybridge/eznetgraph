@@ -99,6 +99,7 @@ dbg "Loaded: dbg()"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## Delete all named nodes of <type> from current nodelist.
 ##
 #
 ng_delete_type()
@@ -116,6 +117,8 @@ dbg "Loaded ng_delete_type()"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## delete a row of commonly known types, used to completely reset 
+## current netgraph to starting position.
 ##
 #
 ng_fallback()
@@ -124,9 +127,12 @@ ng_fallback()
   ng_delete_type etf
   ng_delete_type bpf
   ng_delete_type eiface
+  ng_delete_type tee
+  ng_delete_type bridge
 }  
 
 dbg "Loaded: ng_fallback()"
+
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
 ## Small method to generate a random MAC address. Based on the virtual.lan 
@@ -212,6 +218,8 @@ dbg "Loaded: ng_create_bpf_prog()"
 #####0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
 ## For some use cases we need to clone the MAC address of an external interface 
 ## to a list of NETGRAPH eiface interfaces. 
+##
+## Do not forget to set $_extif in the environment!
 #
 ng_clone_mac()
 {
@@ -220,7 +228,7 @@ ng_clone_mac()
   _extMAC=`${IFCONFIG} $_extif ether | grep ether | tr -s ' ' | cut -d ' ' -f 2`
   for _interface in $@
   do
-    ${IFCONFIG}     $_int  ether   $_extMAC
+    ${IFCONFIG}     $_interface  ether   $_extMAC
   done
 }
 
@@ -311,18 +319,17 @@ dbg "Loaded: ng_remove_hook()"
 #
 ng_new_graph()
 {
-  local _node1 _hook1 _type1 _node2 _hook2 _type2
+  local _node1 _hook1 _type1 _node2 _hook2 _type2 _ngtmp
+  dbg "Trying: ng_new_graph $1 $2"
   _node1=`ng_split_on_colon $1 node`
   _node2=`ng_split_on_colon $2 node`
   _hook1=`ng_split_on_colon $1 hook`
   _hook2=`ng_split_on_colon $2 hook`
   _type1=`ng_split_on_colon $1 type`
   _type2=`ng_split_on_colon $2 type`
-  dbg "Running with $1 $2"
-  NGTMP=`${MKTEMP}`
-  dbg "Using NGTMP=$NGTMP"
-  TMPND=`${ECHO} $NGTMP | sed 's/.*tmp.//'`
-  cat > $NGTMP << xxENDxx
+  _ngtmp=`${MKTEMP}`
+  TMPND=`${ECHO} $_ngtmp | sed 's/.*tmp.//'`
+  cat > $_ngtmp << xxENDxx
     mkpeer .: tee $TMPND left2right
     name   .:$TMPND $TMPND
     mkpeer $TMPND: $_type1 left  $_hook1
@@ -331,8 +338,8 @@ ng_new_graph()
     name   $TMPND:right $_node2
     shutdown $TMPND: 
 xxENDxx
-  ${NGCTL} -f $NGTMP
-  ${RM} $NGTMP
+  ${NGCTL} -f $_ngtmp
+  ${RM} $_ngtmp
 }
   
 dbg "Loaded: ng_new_graph()"
@@ -348,22 +355,22 @@ dbg "Loaded: ng_new_graph()"
 #
 ng_switched_connection()
 {
-  local _swtmp _br _iface _counter
+  local _swtmp _br _iface _counter _tmpnode
   _br=$1
   _counter=1
   shift
   _swtmp=`${MKTEMP}`
-  T=`${ECHO} $_swtmp | ${SED} 's/.*tmp.//'`
+  _tmpnode=`${ECHO} $_swtmp | ${SED} 's/.*tmp.//'`
   dbg "Trying: ng_switched_connection $@"
-  ng_new_graph $br:link0:bridge $T:ether:eiface
+  ng_new_graph $_br:link0:bridge $_tmpnode:ether:eiface
   for _iface in $@ 
   do
-    ng_new_peer  $br:link$_counter $_iface:ether:eiface
+    ng_new_peer  $_br:link$_counter $_iface:ether:eiface
     ng_create_mac $_iface
     _counter=`${EXPR} $_counter + 1`
   done
-  ${SHUTDOWN} $T:
-  ${RM} $SWTMP
+  ${SHUTDOWN} $_tmpnode:
+  ${RM} $_swtmp
 }
 
 dbg "Loaded: ng_switched_connection()"
@@ -408,7 +415,7 @@ dbg "Loaded: ng_bpf_init()"
 ## Simple method to change the filter of such initialized ng_bpf. (see
 ## ng_bpf_init()
 #
-ng_bpf_modify_match()
+ng_bpf_set()
 {
   local _node _prog
   _node=$1
@@ -419,7 +426,7 @@ ng_bpf_modify_match()
                             ifNotMatch=\"nomatch\"    $_prog }
 }
 
-dbg "Loaded: ng_bpf_modify_match()"
+dbg "Loaded: ng_bpf_set()"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -459,13 +466,15 @@ ng_bpf_create()
   fi
 
   ng_bpf_init           $_name
-  #ng_bpf_modify_match   $_name  "$_bpfprog"
 
   dbg "Finished:  ng_bpf_create $1 ..."
 }
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## Like ng_bpf_create above, this routing integrates an ng_etf into the netgraph
+## netgraph. you might notice, that ETF has no need of initialization, as 
+## the node is installed with a usefull nomatch-policy
 ##
 ## Usage: ng_etf_create <name> <ds:hk> <match:hk:type> <nomatch:hk:type> 
 #
@@ -510,10 +519,10 @@ dbg "Loaded: ng_etf_create()"
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
 ##
 ## Example to initialize filtering of ipv4 (i.e. ipv4=0x800 and arp=0x806)
-## ng_etf_init etf_in 0x800 0x806
-## Usage: ng_etf_init <etfname> <list of ethertypes> 
+## ng_etf_set etf_in 0x800 0x806
+## Usage: ng_etf_set <etfname> <list of ethertypes> 
 #
-ng_etf_init()
+ng_etf_set()
 {
   local _iface _ethertype
   _etfname=$1
