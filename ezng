@@ -1,0 +1,134 @@
+#!/bin/sh
+#
+# PROVIDE: ezng
+# REQUIRE: netif
+# BEFORE: jail
+#
+# Add the following lines to /etc/rc.conf or /etc/rc.conf.d/ezng to enable ezng:
+# ezng_enable (bool):	Set it to "YES" to enable postfix.
+#			Default is "NO".
+#
+
+. /etc/rc.subr
+
+# uncomment following line for debugging comments
+DEBUG=1
+
+name="ezng"
+rcvar=${name}_enable
+
+load_rc_config $name
+
+: ${ezng_enable:="NO"}
+: ${ezng_kldload:="netgraph ng_tee ng_etf ng_bpf ng_eiface ng_ether ng_socket ng_ksocket ng_bridge"}
+: ${ezng_config:="/usr/local/etc/ezng/ezng.conf"}
+: ${ezng_rc_source:="/usr/local/etc/ezng/ezng.subr"} 
+: ${ezng_count:="5"}
+: ${ezng_debug:="NO"}
+
+start_cmd=${name}_start
+stop_cmd=${name}_stop
+extra_commands="test"
+test_cmd="${name}_test"
+
+ezng_source_rc_subr() {
+  if [ -r ${ezng_rc_source} ]
+    then
+      # source exists, source it
+      . ${ezng_rc_source}
+      if [ $? = 1 ] 
+        then 
+          echo "Sourcing of ${ezng_rc_source} failed, exiting..." 
+          return 1
+      fi
+    else
+      echo "File ${ezng_rc_source} not found, exiting..." 
+      return 1
+  fi
+}
+  
+
+ezng_start() {
+  ezng_source_rc_subr
+  [ $? = 1 ] && return 1
+
+  # check all modules are loaded (and load them if needed)
+
+  local _module_path=`sysctl -b kern.module_path` 
+  local _interfaces=`ifconfig -a | grep ': flags=' | sed 's/:.*//'` 
+
+  for kld in ${ezng_kldload}
+  do 
+    echo "checking ${kld}" 
+    /sbin/kldstat -m ${kld} > /dev/null  2>&1
+    if [ $? = '0' ]
+       then 
+         dbg "module ${kld} already loaded" 
+       else
+         if [ -r ${_module_path}/${kld}.ko ] 
+           then 
+             dbg "file ${_module_path}/${kld}.ko exists" 
+             if [ $(/sbin/kldload  ${_module_path}/${kld}.ko) ] 
+               then 
+                 dbg "module ${kld} loaded successfully" 
+               else
+                 echo "Failed to load module '${kld}'. Exiting..." 
+                 return 1
+             fi
+           else
+             echo "Module does not exist: ${_module_path}/${kld}.ko. Exiting..." 
+             return 1
+         fi
+      fi
+  done
+
+  # load netgraph if there is no active netgraph 
+
+  if [ $( ngctl list | grep -v 'Num hooks: 0$' | wc -l ) = '1' ] 
+    then
+      dbg "no active hooks found, trying to load ${ezng_config}" 
+      if [ -r ${ezng_config} ]
+        then 
+          . ${ezng_config} 
+          if [ $? = '1' ] 
+            then
+              echo "Loading ${ezng_config} failed, running fallback."
+              ng_fallback
+              echo "Exiting..." 
+              return 1 
+          fi
+        else
+          echo "File ${ezng_config} not found, exiting..."
+          echo "Hint: There are sample configs in /usr/local/etc/ezng/" 
+          return 1
+      fi
+    else
+      echo "Active netgraph found, declining ..." 
+      return 1
+  fi
+}
+
+ezng_stop() {
+  ezng_source_rc_subr
+  [ $? = 1 ] && return 1
+  ezng_fallback
+}
+
+ezng_test() {
+  echo "Testing netgraph provided in ${ezng_config}."
+  echo "If you experience network loss in the next ${ezng_count} seconds, the netgraph most probably is faulty."
+  echo "In case the countdown is printed natively, your netgraph is intact (Y) !!"
+  ezng_start
+  [ $? = 1 ] && return 1
+  for countdown in `seq ${ezng_count} -1 0` 
+    do
+      printf "Removing entire netgraph in %s seconds.\\r" ${countdown} 
+      sleep 1
+    done
+  echo '' 
+  echo "Removing netgraph."
+  ezng_stop
+}
+
+
+run_rc_command "$1"

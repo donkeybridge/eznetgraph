@@ -1,0 +1,546 @@
+
+# 
+# Copyright (c) 2016, Benjamin L. Tischendorf
+#
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without 
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice, 
+#    this list of conditions and the following disclaimer in the documentation 
+#    and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE 
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER 
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+## NG.SUBR provides some methods to ease creation of freebsd netgraphs
+##
+## Needs to be improved: Introduction
+## 
+#
+
+#
+## Uncomment the following line to activate the dbg() method.
+#
+#DEBUG=1
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## Creating command shortcuts with absolute path 
+##    for ngctl commands
+#
+NGCTL="/usr/sbin/ngctl"
+SHUTDOWN="${NGCTL} shutdown"
+CONNECT="${NGCTL} connect"
+RMHOOK="${NGCTL} rmhook"
+MKPEER="${NGCTL} mkpeer"
+LIST="${NGCTL} list"
+NAME="${NGCTL} name"
+SHOW="${NGCTL} show"
+MSG="${NGCTL} msg"
+
+#
+## More commands used in the script
+#
+IFCONFIG="/sbin/ifconfig"
+TCPDUMP="/usr/sbin/tcpdump"
+MKTEMP="/usr/bin/mktemp"
+PRINTF="/usr/bin/printf"
+HEAD="/usr/bin/head"
+TAIL="/usr/bin/tail"
+EXPR="/bin/expr"
+ECHO="/bin/echo"
+CUT="/usr/bin/cut"
+AWK="/usr/bin/awk"
+SED="/usr/bin/sed"
+RM="/bin/rm"
+OD="/usr/bin/od"
+TR="/usr/bin/tr -s ' '"
+
+# 
+## A main multipurpose temporary file
+#
+TMP=`/usr/bin/mktemp`
+
+#
+## The mac prefix used for eiface MAC addresses
+##   consider setting the LOCAL bit for this MAC address if you change this
+##   if unsure, read https://tools.ietf.org/html/rfc5342
+#
+MAC_PREFIX="BE:EF:00"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## 
+#
+dbg()
+{
+  if [ ${DEBUG:-0} -eq 1 ]
+  then
+      ${ECHO} "NG.SUBR ==> $1"
+  fi
+}
+
+dbg "Loaded: dbg()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## Delete all named nodes of <type> from current nodelist.
+##
+#
+ezng_delete_type()
+{
+  local $_ngtype $_list $_iface
+  _ngtype=$1
+  _list=`${LIST} | grep ${_ngtype} | cut -d ' ' -f 4`
+  for _iface in $_list
+  do
+    ${SHUTDOWN} $_iface:
+  done
+}
+
+dbg "Loaded ezng_delete_type()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## delete a row of commonly known types, used to completely reset 
+## current netgraph to starting position.
+##
+#
+ezng_fallback()
+{
+  dbg "Trying: Running fallback"
+  ezng_delete_type etf
+  ezng_delete_type bpf
+  ezng_delete_type eiface
+  ezng_delete_type tee
+  ezng_delete_type bridge
+}  
+
+dbg "Loaded: ezng_fallback()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## Small method to generate a random MAC address. Based on the virtual.lan 
+## example from the FreeBSD distribution. Find the original file in
+## /usr/share/examples/netgraph/virtual.lan
+##
+## Usage: ezng_create_mac eifacename
+#
+ezng_create_mac()
+{
+  local _M4 _M5 _M6 _MAC
+  _M4=`${OD} -An -N2 -i /dev/random | ${SED} -e 's/ //g' |  \
+                                      ${AWK} '{ print $1 % 256 }'`
+  _M5=`${OD} -An -N2 -i /dev/random | ${SED} -e 's/ //g' |  \
+                                      ${AWK} '{ print $1 % 256 }'`
+  _M6=`${OD} -An -N2 -i /dev/random | ${SED} -e 's/ //g' |  \
+                                      ${AWK} '{ print $1 % 256 }'`
+  _MAC=`${PRINTF} ${MAC_PREFIX}:%02x:%02x:%02x ${_M4} ${_M5} ${_M6}`
+  ${IFCONFIG} $1 ether $_MAC
+  dbg "Tried: ${IFCONFIG} $1 ether $_MAC"
+}
+
+dbg "Loaded: ezng_create_mac()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## One major feature of this script is wrapping ngctl commands to the human 
+## readable form "node:hook:type". To split this within the script, the 
+## following is method is used.
+##
+## Usage: ezng_split_on_colon $PARAM { node | hook | type } 
+#
+ezng_split_on_colon()
+{
+  local _node _hook
+  ${ECHO} $1 > $TMP
+  IFS=\: read _node _hook _type  < $TMP
+  case "$2" in
+    "node") ${ECHO} $_node;;
+    "hook") ${ECHO} $_hook;;
+    "type") ${ECHO} $_type;;
+    .)      ${ECHO} error;;
+  esac
+}
+
+dbg "Loaded: ezng_split_on_single_colon()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## The netgraph documentation explains how to configure ng_bpf nodes on manpage
+## https://www.freebsd.org/cgi/man.cgi?query=ng_bpf
+## This is put into a method here.
+##
+## Take care: "printf" below is not ${PRINTF}, but awk internal command 
+## 
+## Usage: ezng_create_bpf_prog "expression"
+#
+ezng_create_bpf_prog()
+{
+  AWKTMP=`${MKTEMP}`
+  cat > $AWKTMP << xxENDxx
+         {
+           if (!init) {
+             printf "bpf_prog_len=%d bpf_prog=[", \$1;
+             init=1;
+           } else {
+             printf " { code=%d jt=%d jf=%d k=%d }", \$1, \$2, \$3, \$4;
+           }
+         }
+         END {
+           print " ]"
+         }
+xxENDxx
+
+  BPFPROG=`${TCPDUMP} -s 8192 -ddd $1 | ${AWK} -f ${AWKTMP}`
+  ${ECHO} $BPFPROG
+  ${RM} $AWKTMP
+}
+
+dbg "Loaded: ezng_create_bpf_prog()"
+
+################################################################################
+#####0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## For some use cases we need to clone the MAC address of an external interface 
+## to a list of NETGRAPH eiface interfaces. 
+##
+## Do not forget to set $_extif in the environment!
+#
+ezng_clone_mac()
+{
+  local _extMAC _interface
+  dbg "Trying: ezng_clone_mac $@"
+  _extMAC=`${IFCONFIG} $_extif ether | grep ether | tr -s ' ' | cut -d ' ' -f 2`
+  for _interface in $@
+  do
+    ${IFCONFIG}     $_interface  ether   $_extMAC
+  done
+}
+
+dbg "Loaded: ezng_clone_mac()"
+
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## ezng_new_peer() wraps the creation of a new peer (including naming the new
+## node) into a single line. If the type of the new node is "eiface", the node
+## will also be renamed using ${IFCONFIG}
+##
+## Usage: ezng_new_peer src_name:hook peer_name:hook:type
+#
+##### Need to improve LASTNODE=
+#
+ezng_new_peer()
+{
+  local _type _src _src_hook _peer _peer_hook _oifs _lastnode
+  dbg "Trying: ezng_new_peer $1 $2 $3"
+        _src=`ezng_split_on_colon $1 node`
+   _src_hook=`ezng_split_on_colon $1 hook`
+       _peer=`ezng_split_on_colon $2 node`
+  _peer_hook=`ezng_split_on_colon $2 hook`
+       _type=`ezng_split_on_colon $2 type`
+  ${MKPEER} $_src: $_type $_src_hook $_peer_hook
+  dbg   "        MKPEER exited on $?"
+  _lastnode=`${SHOW} $_src:$_src_hook | ${HEAD} -1 | ${TR} | ${CUT} -f 4 -d' '`
+  if [ $_type = "eiface" ]
+  then
+    dbg "        naming and refacing $LASTNODE to $_peer"
+    ${NAME}     $_lastnode:              $_peer
+    ${IFCONFIG} $_lastnode        name   $_peer 2>/dev/null >/dev/null
+  else
+    dbg "        naming $_src:$_src_hook to $_peer"
+    ${NAME}   $_src:$_src_hook $_peer 2>/dev/null >/dev/null
+  fi
+}
+
+dbg "Loaded: ezng_new_peer()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+##
+## Usage: ezng_connect src:hook peer:hook
+#
+ezng_connect()
+{
+  local       _csrc _csrc_hook _cpeer _cpeer_hook
+  dbg "Trying: ezng_connect $1 $2"
+        _csrc=`ezng_split_on_colon $1 node`
+   _csrc_hook=`ezng_split_on_colon $1 hook`
+       _cpeer=`ezng_split_on_colon $2 node`
+  _cpeer_hook=`ezng_split_on_colon $2 hook`
+  ${CONNECT} $_csrc: $_cpeer: $_csrc_hook $_cpeer_hook
+}
+
+dbg "Loaded: ezng_connect()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## Usage: ezng_remove_hook node:hook
+#
+ezng_remove_hook()
+{
+  local _node _hook
+  dbg "Trying: ezng_remove_hook $1"
+  _node=`ezng_split_on_colon $1 node`
+  _hook=`ezng_split_on_colon $1 hook`
+  ${RMHOOK} $_node: $_hook
+}
+
+dbg "Loaded: ezng_remove_hook()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## Since most nodetypes do not persist if they are not connected to another
+## persistant node, it is sometimes neccessary to create a new graph out of the
+## "nowhere" unless constantly working with ngctl -f, this is only applied 
+## here. So this is the way to start a new netgraph. 
+## The trick here is to create a temporary tee node bound to the current 
+## ng_socket, attaching the new nodes to left and right hooks. Nodes attached
+## to the tee are connected directly, as soon as the tee node is shut down.
+## 
+## Usage: ezng_new_graph node1:hook1:type node2:hook1:type
+#
+ezng_new_graph()
+{
+  local _node1 _hook1 _type1 _node2 _hook2 _type2 _ngtmp
+  dbg "Trying: ezng_new_graph $1 $2"
+  _node1=`ezng_split_on_colon $1 node`
+  _node2=`ezng_split_on_colon $2 node`
+  _hook1=`ezng_split_on_colon $1 hook`
+  _hook2=`ezng_split_on_colon $2 hook`
+  _type1=`ezng_split_on_colon $1 type`
+  _type2=`ezng_split_on_colon $2 type`
+  _ngtmp=`${MKTEMP}`
+  TMPND=`${ECHO} $_ngtmp | sed 's/.*tmp.//'`
+  cat > $_ngtmp << xxENDxx
+    mkpeer .: tee $TMPND left2right
+    name   .:$TMPND $TMPND
+    mkpeer $TMPND: $_type1 left  $_hook1
+    mkpeer $TMPND: $_type2 right $_hook2
+    name   $TMPND:left  $_node1
+    name   $TMPND:right $_node2
+    shutdown $TMPND: 
+xxENDxx
+  ${NGCTL} -f $_ngtmp
+  ${RM} $_ngtmp
+}
+  
+dbg "Loaded: ezng_new_graph()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+## This one creates a connection between two ng_eiface nodes by creating an 
+## ng_bridge in-between. Use ezng_new_peer() to add more eiface nodes (or whatever)
+## to the bridge.
+## 
+## Usage: ezng_switched_connection bridgename peername1 peername2 ...
+##
+#
+ezng_switched_connection()
+{
+  local _swtmp _br _iface _counter _tmpnode
+  _br=$1
+  _counter=1
+  shift
+  _swtmp=`${MKTEMP}`
+  _tmpnode=`${ECHO} $_swtmp | ${SED} 's/.*tmp.//'`
+  dbg "Trying: ezng_switched_connection $@"
+  ezng_new_graph $_br:link0:bridge $_tmpnode:ether:eiface
+  for _iface in $@ 
+  do
+    ezng_new_peer  $_br:link$_counter $_iface:ether:eiface
+    ezng_create_mac $_iface
+    _counter=`${EXPR} $_counter + 1`
+  done
+  ${SHUTDOWN} $_tmpnode:
+  ${RM} $_swtmp
+}
+
+dbg "Loaded: ezng_switched_connection()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## After creating (and connecting) an ng_bpf, it remains unconfigured hence it
+## drops all packets. As this scripts assumes that every bpf only has 3 nodes
+## (match, nomatch and downstream--allthough hooks can be named indiviually), 
+## we assume all incoming traffic is arriving on "downstream", filtered traffic 
+## going to "match" and the rest on "nomatch". Following this assumtion the bpf
+## node can be initialized as "unfiltered" by directing all traffic between
+## downstream and nomatch. 
+## Also the initialization prevents the filter from forgetting the flowback 
+## configuration. Based on the assumption above, traffic arriving from both
+## match and nomatch is directed to downstream. 
+#
+ezng_bpf_init()
+{
+  local _node _prog
+  _node=$1
+  _prog=`ezng_create_bpf_prog ""`
+  dbg "Trying: ezng_bpf_init() $1 "
+  dbg "        nomatch"
+  ${MSG} $_node: setprogram { thisHook=\"nomatch\"    \
+                               ifMatch=\"downstream\" \
+                            ifNotMatch=\"downstream\"      ${_prog} }
+  dbg "        match"
+  ${MSG} $_node: setprogram { thisHook=\"match\"      \
+                               ifMatch=\"downstream\" \
+                            ifNotMatch=\"downstream\"      ${_prog} }
+  dbg "        downstream"
+  ${MSG} $_node: setprogram { thisHook=\"downstream\" \
+                               ifMatch=\"nomatch\"    \
+                            ifNotMatch=\"nomatch\"         ${_prog} }
+}
+
+dbg "Loaded: ezng_bpf_init()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## Simple method to change the filter of initialized ng_bpf. (see
+## ezng_bpf_init()
+#
+ezng_bpf_set()
+{
+  local _node _prog
+  _node=$1
+  _prog=`ezng_create_bpf_prog "$2"`
+  dbg "Trying: ezng_bpf_modify_match $1 $2"
+  ${MSG} $_node: setprogram { thisHook=\"downstream\" \
+                               ifMatch=\"match\"      \
+                            ifNotMatch=\"nomatch\"    $_prog }
+}
+
+dbg "Loaded: ezng_bpf_set()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## Usage: ezng_bpf_create bpfname dsnode:dshk mnode:mhk:mtype nmnode:nmhk:nmtype
+#
+ezng_bpf_create()
+{
+  local _name _bpfdownstream _bpfprog   _match   _matchhook   _matchtype \
+                                      _nomatch _nomatchhook _nomatchtype
+  dbg "Trying: ezng_bpf_create $1 ..."
+           _name=$1
+  _bpfdownstream=$2
+        _bpfprog=$5
+          _match=`ezng_split_on_colon $3 "node"`
+      _matchhook=`ezng_split_on_colon $3 "hook"`
+      _matchtype=`ezng_split_on_colon $3 "type"`
+        _nomatch=`ezng_split_on_colon $4 "node"`
+    _nomatchhook=`ezng_split_on_colon $4 "hook"`
+    _nomatchtype=`ezng_split_on_colon $4 "type"`
+
+  ezng_new_peer   $_bpfdownstream      $_name:downstream:bpf
+
+  ${SHOW} $_match: >/dev/null 2>/dev/null
+  if [ $? = 0 ]
+  then
+    ezng_connect  $_name:match  $_match:$_matchhook
+  else
+    ezng_new_peer $_name:match  $_match:$_matchhook:$_matchtype
+  fi
+
+  ${SHOW} $_nomatch: >/dev/null 2>/dev/null >/dev/null
+  if [ $? = 0 ]
+  then
+    ezng_connect  $_name:nomatch   $_nomatch:$_nomatchhook
+  else
+    ezng_new_peer $_name:nomatch   $_nomatch:$_nomatchhook:$_nomatchtype
+  fi
+
+  ezng_bpf_init           $_name
+
+  dbg "Finished:  ezng_bpf_create $1 ..."
+}
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## Like ezng_bpf_create above, this routing integrates an ng_etf into the netgraph
+## netgraph. you might notice, that ETF has no need of initialization, as 
+## the node is installed with a usefull nomatch-policy
+##
+## Usage: ezng_etf_create <name> <ds:hk> <match:hk:type> <nomatch:hk:type> 
+#
+ezng_etf_create()
+{
+  local _name _etfdownstream _bpfprog   _match   _matchhook   _matchtype \
+                                      _nomatch _nomatchhook _nomatchtype
+  dbg "Trying: ezng_bpf_create $1 ..."
+           _name=$1
+  _etfdownstream=$2
+          _match=`ezng_split_on_colon $3 "node"`
+      _matchhook=`ezng_split_on_colon $3 "hook"`
+      _matchtype=`ezng_split_on_colon $3 "type"`
+        _nomatch=`ezng_split_on_colon $4 "node"`
+    _nomatchhook=`ezng_split_on_colon $4 "hook"`
+    _nomatchtype=`ezng_split_on_colon $4 "type"`
+
+  ezng_new_peer   $_etfdownstream      $_name:downstream:etf
+
+  ${SHOW} $_match: >/dev/null 2>/dev/null
+  if [ $? = 0 ]
+  then
+    ezng_connect  $_name:match   $_match:$_matchhook
+  else
+    ezng_new_peer $_name:match   $_match:$_matchhook:$_matchtype
+  fi
+
+  ${SHOW} $_nomatch: >/dev/null 2>/dev/null >/dev/null
+  if [ $? = 0 ]
+  then
+    ezng_connect  $_name:nomatch    $_nomatch:$_nomatchhook
+  else
+    ezng_new_peer $_name:nomatch    $_nomatch:$_nomatchhook:$_nomatchtype 
+  fi
+
+  dbg "Finished:  ezng_etf_create $1 ..."
+}
+
+dbg "Loaded: ezng_etf_create()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+## Example to initialize filtering of ipv4 (i.e. ipv4=0x800 and arp=0x806)
+## ezng_etf_set etf_in 0x800 0x806
+##
+## Usage: ezng_etf_set <etfname> <list of ethertypes> 
+#
+ezng_etf_set()
+{
+  local _iface _ethertype
+  _etfname=$1
+  shift
+  for _ethertype in $@
+  do
+    ${MSG} $_etfname: setfilter { matchhook=\"match\" ethertype=$_ethertype }
+  done
+}
+
+dbg "Loaded: ezng_etf_init()"
+
+dbg "----- Finished loading ngctl.subr -----"
+ 
