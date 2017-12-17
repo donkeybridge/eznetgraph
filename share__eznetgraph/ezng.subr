@@ -36,7 +36,7 @@
 #
 ## Uncomment the following line to activate the ezdbg() method.
 #
-#DEBUG=1
+DEBUG=1
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -45,36 +45,35 @@
 ##    for ngctl commands
 #
 
-WHEREIS="/usr/sbin/whereis" 
+WHEREIS="/usr/bin/whereis -bq" 
 
-NGCTL=    $( ${WHEREIS} ngctl) 
+NGCTL="$(${WHEREIS} ngctl)"
 SHUTDOWN="${NGCTL} shutdown"
-CONNECT= "${NGCTL} connect"
-RMHOOK=  "${NGCTL} rmhook"
-MKPEER=  "${NGCTL} mkpeer"
-LIST=    "${NGCTL} list"
-NAME=    "${NGCTL} name"
-SHOW=    "${NGCTL} show"
-MSG=     "${NGCTL} msg"
+CONNECT="${NGCTL} connect"
+RMHOOK="${NGCTL} rmhook"
+MKPEER="${NGCTL} mkpeer"
+LIST="${NGCTL} list"
+NAME="${NGCTL} name"
+SHOW="${NGCTL} show"
+MSG="${NGCTL} msg"
 
 #
 ## More commands used in the script
 #
-IFCONFIG=$( ${WHEREIS} ifconfig )
-TCPDUMP= $( ${WHEREIS} tcpdump  )
-MKTEMP=  $( ${WHEREIS} mktemp   )
-PRINTF=  $( ${WHEREIS} printf   )
-HEAD=    $( ${WHEREIS} head     )
-TAIL=    $( ${WHEREIS} tail     )
-EXPR=    $( ${WHEREIS} expr     )
-ECHO=    $( ${WHEREIS} echo     )
-CUT=     $( ${WHEREIS} cut      )
-AWK=     $( ${WHEREIS} awk      )
-SED=     $( ${WHEREIS} sed      )
-RM=      $( ${WHEREIS} rm       )
-OD=      $( ${WHEREIS} od       )
-_TR=     $( ${WHEREIS} tr       )
-TR=        "${_TR} -s ' '" 
+IFCONFIG=$(${WHEREIS} ifconfig )
+TCPDUMP=$(${WHEREIS} tcpdump  )
+MKTEMP=$(${WHEREIS} mktemp   )
+PRINTF=$(${WHEREIS} printf   )
+HEAD=$(${WHEREIS} head     )
+TAIL=$(${WHEREIS} tail     )
+EXPR=$(${WHEREIS} expr     )
+ECHO=$(${WHEREIS} echo     )
+CUT=$(${WHEREIS} cut      )
+AWK=$(${WHEREIS} awk      )
+SED=$(${WHEREIS} sed      )
+RM=$(${WHEREIS} rm       )
+OD=$(${WHEREIS} od       )
+TR="$(${WHEREIS} tr      ) -s ' '" 
 # 
 ## A main multipurpose temporary file
 #
@@ -111,8 +110,10 @@ ezng_delete_type()
 {
   local $_ngtype $_list $_iface
 
-  _ngtype= $1
-  _list=   $( ${LIST} | grep ${_ngtype} | cut -d ' ' -f 4 )
+  _ngtype=$1
+  _list=$( ${LIST} | grep ${_ngtype} | cut -d ' ' -f 4 )
+
+  ezdbg "Deleting $_ngtype..." 
 
   for _iface in $_list
   do
@@ -120,7 +121,7 @@ ezng_delete_type()
   done
 }
 
-ezdbg "Loaded ezng_delete_type()"
+ezdbg "Loaded: ezng_delete_type()"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -213,7 +214,7 @@ ezdbg "Loaded: ezng_split_on_single_colon()"
 ezng_create_bpf_prog()
 {
   local _EXPRESSION
-  _EXPRESSION = $1
+  _EXPRESSION=$1
 
   AWKTMP=$( ${MKTEMP} )
   cat > $AWKTMP << xxENDxx
@@ -272,14 +273,16 @@ ezdbg "Loaded: ezng_clone_mac()"
 #
 ezng_new_peer()
 {
-  local _type _src _src_hook _peer _peer_hook _oifs _lastnode
-  ezdbg "Trying: ezng_new_peer $1 $2 $3"
+  local _type _src _src_hook _peer _peer_hook 
+  ezdbg "Trying: ezng_new_peer $1 $2"
 
         _src=$( ezng_split_on_colon $1 node )
    _src_hook=$( ezng_split_on_colon $1 hook )
        _peer=$( ezng_split_on_colon $2 node )
   _peer_hook=$( ezng_split_on_colon $2 hook )
        _type=$( ezng_split_on_colon $2 type )
+
+  ezdbg "Making peer $_src: $_type $_src_hook $_peer_hook" 
 
   ${MKPEER} $_src: $_type $_src_hook $_peer_hook
   ezdbg   "        MKPEER exited on $?"
@@ -324,16 +327,18 @@ ezng_remove_hook()
 
 ezdbg "Loaded: ezng_remove_hook()"
 
-ezng_rename_node() {
+ezng_rename_node() 
+{
   local _src _src_hook _type _name _last
-  _src     =$1; shift
+  _src=$1; shift
   _src_hook=$1; shift
-  _type    =$1; shift
-  _name    =$1; shift
+  _type=$1; shift
+  _name=$1; shift
     
   if [ $_type = "eiface" ]
   then
-    _last=  $( ${SHOW} $_src:$_src_hook | ${HEAD} -1 | ${TR} | ${CUT} -f 4 -d' ' )
+    ezdbg "        rename: eiface ${_name} found" 
+    _last=$( ${SHOW} $_src:$_src_hook | ${HEAD} -n1 | ${TR} | ${CUT} -f 4 -d ' ' )
     ezdbg "        naming and refacing $_last to $_name"
     ${NAME}     $_last:              $_name
     ${IFCONFIG} $_last        name   $_name 2>/dev/null >/dev/null
@@ -370,7 +375,7 @@ ezng_new_graph()
   _type1=$( ezng_split_on_colon $1 type )
   _type2=$( ezng_split_on_colon $2 type )
   _ngtmp=$( ${MKTEMP} )
-  TMPND= $( ${ECHO} $_ngtmp | sed 's/.*tmp.//' )
+  TMPND=$( ${ECHO} $_ngtmp | sed 's/.*tmp.//' )
 
   cat > $_ngtmp << xxENDxx
     mkpeer .: tee $TMPND left2right
@@ -403,7 +408,7 @@ ezng_switched_connection()
   local _swtmp _br _iface _counter _tmpnode
   _br=$1; shift
   _counter=1
-  _swtmp=  $( ${MKTEMP} )
+  _swtmp=$( ${MKTEMP} )
   _tmpnode=$( ${ECHO} $_swtmp | ${SED} 's/.*tmp.//' )
   ezdbg "Trying: ezng_switched_connection $@"
 
@@ -487,7 +492,7 @@ ezng_bpf_create()
 {
   local _name _bpfdownstream _bpfprog   _match   _matchhook   _matchtype \
                                       _nomatch _nomatchhook _nomatchtype
-  ezdbg "Trying: ezng_bpf_create $1 ..."
+  ezdbg "Trying: ezng_bpf_create $1 $2 $3 $4 $5"
            _name=$1
   _bpfdownstream=$2
         _bpfprog=$5

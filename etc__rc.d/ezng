@@ -21,8 +21,8 @@ load_rc_config $name
 
 : ${ezng_enable:="NO"}
 : ${ezng_kldload:="netgraph ng_tee ng_etf ng_bpf ng_eiface ng_ether ng_socket ng_ksocket ng_bridge"}
-: ${ezng_config:="/usr/local/etc/ezng/ezng.conf"}
-: ${ezng_rc_source:="/usr/local/etc/ezng/ezng.subr"} 
+: ${ezng_config:="/usr/local/etc/ezng.conf"}
+: ${ezng_rc_source:="/usr/local/share/eznetgraph/ezng.subr"} 
 : ${ezng_count:="5"}
 : ${ezng_debug:="NO"}
 
@@ -63,14 +63,15 @@ ezng_start() {
     /sbin/kldstat -m ${kld} > /dev/null  2>&1
     if [ $? = '0' ]
        then 
-         dbg "module ${kld} already loaded" 
+         ezdbg "module ${kld} already loaded" 
        else
          if [ -r ${_module_path}/${kld}.ko ] 
            then 
-             dbg "file ${_module_path}/${kld}.ko exists" 
-             if [ $(/sbin/kldload  ${_module_path}/${kld}.ko) ] 
+             ezdbg "file ${_module_path}/${kld}.ko exists" 
+             $(/sbin/kldload  ${_module_path}/${kld}.ko)
+             if [ $? = '0' ]
                then 
-                 dbg "module ${kld} loaded successfully" 
+                 ezdbg "module ${kld} loaded successfully" 
                else
                  echo "Failed to load module '${kld}'. Exiting..." 
                  return 1
@@ -86,14 +87,20 @@ ezng_start() {
 
   if [ $( ngctl list | grep -v 'Num hooks: 0$' | wc -l ) = '1' ] 
     then
-      dbg "no active hooks found, trying to load ${ezng_config}" 
+      ezdbg "no active hooks found, trying to load ${ezng_config}" 
       if [ -r ${ezng_config} ]
         then 
+          #
+          # finally, fire the config file!!!
+          #
           . ${ezng_config} 
+          #
+          #
+          #
           if [ $? = '1' ] 
             then
               echo "Loading ${ezng_config} failed, running fallback."
-              ng_fallback
+              ezng_fallback
               echo "Exiting..." 
               return 1 
           fi
