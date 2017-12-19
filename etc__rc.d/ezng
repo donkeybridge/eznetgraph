@@ -1,8 +1,9 @@
 #!/bin/sh
 #
 # PROVIDE: ezng
-# REQUIRE: netif
-# BEFORE: jail
+# REQUIRE: kld
+# BEFORE: ip6addrctl
+# KEYWORD: nojail
 #
 # Add the following lines to /etc/rc.conf or /etc/rc.conf.d/ezng to enable ezng:
 # ezng_enable (bool):	Set it to "YES" to enable postfix.
@@ -12,7 +13,7 @@
 . /etc/rc.subr
 
 # uncomment following line for debugging comments
-DEBUG=1
+# DEBUG=1
 
 name="ezng"
 rcvar=${name}_enable
