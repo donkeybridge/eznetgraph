@@ -13,7 +13,7 @@
 . /etc/rc.subr
 
 # uncomment following line for debugging comments
-# DEBUG=1
+DEBUG=1
 
 name="ezng"
 rcvar=${name}_enable
@@ -23,7 +23,8 @@ load_rc_config $name
 : ${ezng_enable:="NO"}
 : ${ezng_kldload:="netgraph ng_tee ng_etf ng_bpf ng_eiface ng_ether ng_socket ng_ksocket ng_bridge"}
 : ${ezng_config:="/usr/local/etc/ezng.conf"}
-: ${ezng_rc_source:="/usr/local/share/eznetgraph/ezng.subr"} 
+#: ${ezng_rc_source:="/usr/local/share/eznetgraph/ezng.subr"} 
+: ${ezng_rc_source:="/usr/home/pepe/ezng/share__eznetgraph/ezng.subr"}
 : ${ezng_count:="5"}
 : ${ezng_debug:="NO"}
 
@@ -48,41 +49,42 @@ ezng_source_rc_subr() {
   fi
 }
   
+ezng_test_avail() {
+  ezng_source_rc_subr
+  [ $? = 1 ] && { echo "Could not source ezng.subr, exiting ..."; exit 1; }
+  
+  local _type 
+  local _avail_types
+  local _module_path=$(${SYSCTL} -b kern.module_path)
+
+  ${TYPES}
+  [ $? != 0 ] && { 
+    ezdbg "Netgraph support neither found in kernel nor as loaded modules, trying to load module now."; 
+    ${KLDLOAD} ${_module_path}/netgraph.ko;
+    [ $? != 0 ] && { echo "Could not load ${_module_path}/netgraph.ko, please assure netgraph support is available in kernel or as module before continuing. Exiting ... "; exit 1; }
+    ezdbg " ... netgraph.ko loaded successfully."; 
+  }
+
+  _avail_types=$( ${TYPES} | ${GREP} -v "total\|Number\|------" | ${SED} 's/^[ \t]*//' | ${CUT} -d ' ' -f 1 )
+  for _type in ${EZNG_SUPPORTED}; do 
+    ezdbg "Checking whether needed type $_type is supported by kernel or module... "
+    # Check is done with a substring match:
+    [ "$_type" != "${_avail_types%$_type*}" ] && {
+      ezdbg "     ... $_type not found. Trying to load as module ... " ;
+      ${KLDLOAD} ${_module_path}/$_type.ko ;
+      [ $? != 0 ] && { echo "Could not load ${_module_path}/$_type.ko, please assure this module is available or loaded or in kernel before continuing. Exiting ... "; exit 1; } ;
+    }
+  done
+  # if we are here, all needed types are either available via kernel or loaded as module
+}
 
 ezng_start() {
   ezng_source_rc_subr
   [ $? = 1 ] && return 1
 
-  # check all modules are loaded (and load them if needed)
-
-  local _module_path=`sysctl -b kern.module_path` 
-  local _interfaces=`ifconfig -a | grep ': flags=' | sed 's/:.*//'` 
-
-  for kld in ${ezng_kldload}
-  do 
-    echo "checking ${kld}" 
-    /sbin/kldstat -m ${kld} > /dev/null  2>&1
-    if [ $? = '0' ]
-       then 
-         ezdbg "module ${kld} already loaded" 
-       else
-         if [ -r ${_module_path}/${kld}.ko ] 
-           then 
-             ezdbg "file ${_module_path}/${kld}.ko exists" 
-             $(/sbin/kldload  ${_module_path}/${kld}.ko)
-             if [ $? = '0' ]
-               then 
-                 ezdbg "module ${kld} loaded successfully" 
-               else
-                 echo "Failed to load module '${kld}'. Exiting..." 
-                 return 1
-             fi
-           else
-             echo "Module does not exist: ${_module_path}/${kld}.ko. Exiting..." 
-             return 1
-         fi
-      fi
-  done
+  # check all moDules are loaded (and load them if needed)
+  ezng_test_avail
+  [ $? = 1 ] && { ${ECHO} "ERROR, missing netgraph type(s). Exiting ... "; return 1 }
 
   # load netgraph if there is no active netgraph 
 

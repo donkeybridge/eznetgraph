@@ -36,7 +36,7 @@
 #
 ## Uncomment the following line to activate the ezdbg() method.
 #
-# DEBUG=1
+DEBUG=1
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -51,6 +51,7 @@ SHUTDOWN="${NGCTL} shutdown"
 CONNECT="${NGCTL} connect"
 RMHOOK="${NGCTL} rmhook"
 MKPEER="${NGCTL} mkpeer"
+TYPES="${NGCTL} types"
 LIST="${NGCTL} list"
 NAME="${NGCTL} name"
 SHOW="${NGCTL} show"
@@ -61,10 +62,13 @@ MSG="${NGCTL} msg"
 #
 IFCONFIG=$(${WHEREIS} ifconfig )
 TCPDUMP=$(${WHEREIS} tcpdump  )
+KLDLOAD=$(${WHEREIS} kldload )
+SYSCTL=$(${WHEREIS} sysctl )
 MKTEMP=$(${WHEREIS} mktemp   )
 PRINTF=$(${WHEREIS} printf   )
 HEAD=$(${WHEREIS} head     )
 TAIL=$(${WHEREIS} tail     )
+GREP=$(${WHEREIS} grep     ) 
 EXPR=$(${WHEREIS} expr     )
 ECHO=$(${WHEREIS} echo     )
 CUT=$(${WHEREIS} cut      )
@@ -84,21 +88,18 @@ MAC_PREFIX="BE:EF:00"
 #
 ## The list of supported netgraph types
 #
-EZNG_SUPPORTED=bpf bridge eiface etf ether hole socket tee  
+EZNG_SUPPORTED="bpf bridge eiface ether hole socket tee"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
 ## 
 #
-ezdbg()
-{
-  if [ ${DEBUG:-0} -eq 1 ]
-  then
-      ${ECHO} "EZNG.SUBR ==> $1"
-  fi
-}
-
+echo "" > /tmp/dbg
+ezdbg() {  test ${DEBUG:-0} -eq 1 && ${ECHO} "EZNG.SUBR ==> $1 " >> /tmp/dbg; }
 ezdbg "Loaded: ezdbg()"
+
+ezexit() { ezdbg "EXIT: $*"; echo -e "$*" >&2; exit 1; }
+ezdbg "Loaded: ezexit()"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -113,7 +114,7 @@ ezng_delete_type()
   _ngtype=$1
   _list=$( ${LIST} | grep ${_ngtype} | cut -d ' ' -f 4 )
 
-  ezdbg "Deleting $_ngtype..." 
+  ezdbg "Deleting all nodes of type $_ngtype..." 
 
   for _iface in $_list
   do
@@ -132,18 +133,57 @@ ezdbg "Loaded: ezng_delete_type()"
 #
 
 ezng_valid_type() {
-  [ ${1} = ""] && ${ECHO} "Missing type while validating, exiting ..." && exit 1
-  VALUE=$( ${ECHO} $EZNG_SUPPORTED | grep -w ${1} > /dev/null ) 
-  if [ $VALUE = '0' ]
-  then 
-    return 0
-  else
-    ${ECHO} "Tried to add unsupported type ${1} to graph. Exiting......."
-    exit 1
-  fi
+  local _type=$1
+  ezdbg "ezng_valid_type() Validating $_type"
+  [ "${_type}" = "" ] && ezexit "Missing type while validating, exiting ..." 
+  [ "${_type}" != "${EZNG_SUPPORTED%$_type*}" ] && return 0
+  ezexit "Tried to add unsupported type ${1} to graph. Exiting......."
 }
 
 ezdbg "Loaded: ezng_valid_type"
+
+ezng_test_avail() {
+  local _OLDIFS
+  local _type 
+  local _avail_types
+  local _field
+  local _loaded=0
+  local _module_path=$(${SYSCTL} -b kern.module_path)
+
+  ${TYPES}
+  [ $? != 0 ] && { 
+    ezdbg "Netgraph support neither found in kernel nor as loaded modules, trying to load module now."; 
+    _OLDIFS=$IFS; IFS=\; 
+    for _field in `sysctl -b kern.module_path`
+    do 
+      ${KLDLOAD} ${_field}/netgraph.ko;
+      [ $? = 0 ] && { _loaded=1; break; };
+      IFS=$_OLDIFS
+    done
+    [ $_loaded = 0 ] && { echo "Could not load ${_module_path}/netgraph.ko, please assure netgraph support is available in kernel or as module before continuing. Exiting ... "; exit 1; }
+    ezdbg " ... netgraph.ko loaded successfully."; 
+  }
+
+  _avail_types=$( ${TYPES} | ${GREP} -v "total\|Number\|------" | ${SED} 's/^ *//' | ${CUT} -d ' ' -f 1 )
+  for _type in ${EZNG_SUPPORTED}; do 
+    ezdbg "Checking whether needed type $_type is supported by kernel or module... "
+    [ $(echo $_avail_types | ${SED} "s/${_type}/oMATCHo/" | grep oMATCHo | wc -l) != "1" ] && echo go
+    if [ $(echo $_avail_types | ${SED} "s/${_type}/oMATCHo/" | grep oMATCHo | wc -l | ${SED} 's/^ *//') != "1" ]  
+    then
+      ezdbg "     ... $_type not found. Trying to load as module ... " ;
+      _OLDIFS=$IFS; IFS=\;; _loaded=0
+      for _field in `sysctl -b kern.module_path`
+      do
+        ${KLDLOAD} ${_field}/ng_${_type}.ko
+        [ $? = 0 ] && { _loaded=1; break; };
+        IFS=$_OLDIFS
+      done
+      [ $_loaded = 0 ] && { echo "Could not load $_type.ko, please assure this module is available or loaded or in kernel before continuing. Exiting ... "; exit 1; } ;
+    fi 
+  done
+  # if we are here, all needed types are either available via kernel or loaded as module
+}
+
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -154,8 +194,6 @@ ezdbg "Loaded: ezng_valid_type"
 ## Usage ezng_valid_hook node hook type (no colons!)
 # 
 
-
-
 ezng_valid_hook() {
   local _node _hook _type
 
@@ -164,50 +202,33 @@ ezng_valid_hook() {
   _type=$3
 
   ${SHOW} $_node:$_hook 2>&1 > /dev/null
-  [ $? = 0 ] && {
-    ${ECHO} "Cannot continue, $_node:$_hook is yet in use. Exiting ..." 
-    exit 1
-  }
-  [ $_type = ""] && ${ECHO} "Missing type while validating, exiting ..." && exit 1
+  [ $? = 0 ]      &&  ezexit "Cannot continue, $_node:$_hook is yet in use. Exiting ..." ;
+  [ $_type = "" ] &&  ezexit "Missing type while validating, exiting ..." ;
 
   case $_type in
 
-        hole | bridge )
+        hole | bridge | bpf )
           return 0
           ;;
 
-	etf | bpf )
-          case _hook in
-            downstream | match | nomatch )
-              	return 0
-                ;;
-            * )
-		${ECHO} "Invalid hook $_hook for $_type, choose from \'downstream | match | nomatch\'. Exiting ... "
-                exit 1
-                ;;
-          esac
-          ;;
-
 	eiface )
-          case _hook in
+          case $_hook in
 	    ether )
 		return 0
                 ;;
             * )
-                ${ECHO} "Invalid hook $_hook for $_type, choose \'ether\'. Exiting ... "
-                exit 1
+                ezexit "Invalid hook $_hook for $_type, choose \'ether\'. Exiting ... "
                 ;;
           esac
           ;;
 
 	ether )	
-          case _hook in
+          case $_hook in
             upper | lower | orphan )
                 return 0
                 ;;
             * )
-                ${ECHO} "Invalid hook $_hook for $_type, choose from \'upper | lower | orphan\'. Exiting ... "
-                exit 1
+                ezexit "Invalid hook $_hook for $_type, choose from \'upper | lower | orphan\'. Exiting ... "
                 ;;
           esac;; 
 
@@ -217,8 +238,7 @@ ezng_valid_hook() {
                 return 0
                 ;;
             * )
-                ${ECHO} "Invalid hook $_hook for $_type, choose from \'left | right | left2right | right2left\'. Exiting ... "
-                exit 1
+                ezexit "Invalid hook $_hook for $_type, choose from \'left | right | left2right | right2left\'. Exiting ... "
                 ;;
           esac
           ;;
@@ -246,7 +266,6 @@ ezdbg "Loaded: ezng_valid_hook"
 ezng_fallback()
 {
   ezdbg "Trying: Running fallback"
-  ezng_delete_type etf
   ezng_delete_type bpf
   ezng_delete_type eiface
   ezng_delete_type tee
@@ -299,6 +318,7 @@ ezdbg "Loaded: ezng_create_mac()"
 #
 ezng_split_on_colon()
 {
+  ezdbg "SPLITTING $1 for $2"
   local _node _hook _type _TMP
 
   _TMP=$( ${MKTEMP} )
@@ -308,7 +328,7 @@ ezng_split_on_colon()
   case "$2" in
     "node") ${ECHO} $_node;;
     "hook") ${ECHO} $_hook;;
-    "type") ezng_valid_type _type && ${ECHO} $_type;;
+    "type") ezng_valid_type $_type && ${ECHO} $_type;;
     .)      ${ECHO} error;;
   esac
   ${RM} $_TMP
@@ -360,15 +380,18 @@ ezdbg "Loaded: ezng_create_bpf_prog()"
 ## For some use cases we need to clone the MAC address of an external interface 
 ## to a list of NETGRAPH eiface interfaces. 
 ##
-## EXTIF, the external / physical interface should be set in the ezng.conf.
+## The default EXTIF is the first interface found by ifconfig. 
 ## Furthermore it might become overwriteable via commandline and by default
 ## is the first interface when running ifconfig.
 #
 ezng_clone_mac()
 {
-  local _EXTMAC _interface
-  EXTIF=${EXTIF:$( ${IFCONFIG} | head -n1 | sed 's/:.*//' )}
-  _EXTMAC=$( ${IFCONFIG} ${EXTIF} ether | grep ether | tr -s ' ' | cut -d ' ' -f 2 )
+  local _EXTMAC _interface _external
+  _interface=$1
+  _external=$2
+  _primary=$( ${IFCONFIG} | head -n1 | sed 's/:.*//' )
+  _EXTIF=${_external:$_primary}
+  _EXTMAC=$( ${IFCONFIG} ${_EXTIF} ether | grep ether | tr -s ' ' | cut -d ' ' -f 2 )
 
   ezdbg "Trying: ezng_clone_mac ... setting MAC address from ${EXTIF} on $@"
 
@@ -397,20 +420,37 @@ ezng_new_peer()
 
         _src=$( ezng_split_on_colon $1 node )
    _src_hook=$( ezng_split_on_colon $1 hook )
-   _src_tyoe=$( ezng_split_on_colon $1 type )
+   _src_type=$( ezng_split_on_colon $1 type )
        _peer=$( ezng_split_on_colon $2 node )
   _peer_hook=$( ezng_split_on_colon $2 hook )
   _peer_type=$( ezng_split_on_colon $2 type )
 
   ezdbg "        ... Making peer $_src: $_type $_src_hook $_peer_hook" 
 
-  ${MKPEER} $_src: $_type $_src_hook $_peer_hook
-  ezdbg   "      ... MKPEER exited on $?"
+  ${MKPEER} $_src: $_peer_type $_src_hook $_peer_hook
+  local _error=$?
+  [ $_error != "0" ] &&  ezexit   "  ... MKPEER exited on $_error"
 
-  ezng_rename_node $_src $_src_hook $_type $_peer
+  ezng_rename_node $_src $_src_hook $_peer_type $_peer
 }
 
 ezdbg "Loaded: ezng_new_peer()"
+
+################################################################################
+#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
+##
+##
+#
+ezng_node_exists()
+{
+  ${SHOW} $1: >/dev/null 2>&1
+  [ $? = 0 ] && { echo 0; return 0; }
+  echo 1
+  return 1
+}
+  
+
+ezdbg "Loaded: ezng_node_exists"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -423,7 +463,6 @@ ezng_connect()
              _cpeer _cpeer_hook _cpeer_type _cpeer_exists _cpeer_valid_hook
 
   ezdbg "Trying: ezng_connect $1 $2"
-
               _csrc=$( ezng_split_on_colon $1 node )
          _csrc_hook=$( ezng_split_on_colon $1 hook )
          _csrc_type=$( ezng_split_on_colon $1 type )
@@ -431,8 +470,12 @@ ezng_connect()
         _cpeer_hook=$( ezng_split_on_colon $2 hook )
         _cpeer_type=$( ezng_split_on_colon $2 type )
 
+  ezdbg " ... SRC: $_csrc:$_csrc_hook:$_csrc_type -> PEER: $_cpeer:$_cpeer_hook:$_cpeer_type"
+
        _csrc_exists=$( ezng_node_exists $_csrc ) 
       _cpeer_exists=$( ezng_node_exists $_cpeer)
+  ezdbg "_csrc_exists is $_csrc_exists, _cpeer_exists is $_cpeer_exists"
+
    _csrc_valid_hook=$( ezng_valid_hook  $_csrc   $_csrc_hook  $_csrc_type)
   _cpeer_valid_hook=$( ezng_valid_hook  $_cpeer $_cpeer_hook $_cpeer_type) 
 
@@ -440,45 +483,53 @@ ezng_connect()
   # if both nodes exist and have according free hooks,
   # a simple connection is made
 
-  [ $_csrc_exists && $_cpeer_exists ] {
-    ${CONNECT} $_csrc: $_cpeer: $_csrc_hook $_cpeer_hook 
-    [ $? = 1 ] && {
-      ${ECHO} "Connecting $_csrc: $_cpeer: $_csrc_hook $_cpeer_hook failed, exiting ..."
-      exit 1
-    }
-  } && return 0
+  if [ "$_csrc_exists" = "0" -a "$_cpeer_exists" = "0" ]
+  then
+    ezdbg "$   ...  ${_csrc} exists and ${_cpeer} exists, calling CONNECT"
+    ${CONNECT} $_csrc: $_cpeer: $_csrc_hook $_cpeer_hook;  
+    [ $? != 0 ] && {
+      ${ECHO} "Connecting $_csrc: $_cpeer: $_csrc_hook $_cpeer_hook failed, exiting ...";
+      exit 1;
+    };
+    return 0 
+  fi
 
   ##########
   # if either exist, the other one will be created and
   # connection is made
 
-  [ $_csrc_exists ] && {
-    ezng_new_peer "$_csrc:$_csrc_hook:$_csrc_type" "$_cpeer:$_cpeer_hook:$_cpeer_type" 
-    [ $? = 1 ] && {
-      ${ECHO} "Creating new peer from $_csrc:$_csrc_hook to $_cpeer:$_cpeer_hook failed, exiting ..." 
-      exit 1
-    }
-  } && return 0
+  if [ "$_csrc_exists" = "0" ] 
+  then
+    ezdbg "$   ... ${_csrc} exists but not ${_cpeer}, calling NEW_PEER"
+    ezng_new_peer "$_csrc:$_csrc_hook:$_csrc_type" "$_cpeer:$_cpeer_hook:$_cpeer_type"; 
+    [ $? != 0 ] && {
+      ${ECHO} "Creating new peer from $_csrc:$_csrc_hook to $_cpeer:$_cpeer_hook failed, exiting ..." ;
+      exit 1;
+    };
+    return 0
+  fi
 
-  [ $_cpeer_exists ] && { 
-    ezng_new_peer "$_cpeer:$_cpeer_hook:$_cpeer_type" "$_csrc:$_csrc_hook:$_csrc_type"
-    [ $? = 1 ] && {
-      ${ECHO} "Creating new peer from $_cpeer:$_cpeer_hook to $_csrc:$_csrc_hook failed, exiting ..." 
-      exit 1
-    }
-  } && return 0
-
+  if [ "$_cpeer_exists" = "0" ] 
+  then
+    ezdbg "$   ... ${_cpeer} exists but not ${_csrc}, calling NEW_PEER"
+    ezng_new_peer "$_cpeer:$_cpeer_hook:$_cpeer_type" "$_csrc:$_csrc_hook:$_csrc_type";
+    [ $? != 0 ] && {
+      ${ECHO} "Creating new peer from $_cpeer:$_cpeer_hook to $_csrc:$_csrc_hook failed, exiting ..." ;
+      exit 1;
+    };
+    return 0 
+  fi
   
   #########
   # if neither exists, new graph is created with ezng_new_graph
   #
-  
+  ezdbg "$   ... neither ${_csrc} nor ${_cpeer} exist, calling NEW_GRAPH"
   ezng_new_graph "$_csrc:$_csrc_hook:$_csrc_type" "$_cpeer:$_cpeer_hook:$_cpeer_type"
-  [ $? = 1 ] && {
-    ${ECHO} "Creating new graph with $_csrc:$_csrc_hook:$_csrc_type and $_cpeer:$_cpeer_hook:$_cpeer_type failed, exiting ... "
-    exit 1
+  [ $? != 0 ] && {
+    ${ECHO} "Creating new graph with $_csrc:$_csrc_hook:$_csrc_type and $_cpeer:$_cpeer_hook:$_cpeer_type failed, exiting ... ";
+    exit 1;
   } 
-
+  return 0
 }
 
 ezdbg "Loaded: ezng_connect()"
@@ -515,7 +566,7 @@ ezng_rename_node()
   _type=$1; shift
   _name=$1; shift
     
-  if [ $_type = "eiface" ]
+  if [ "$_type" = "eiface" ]
   then
     ezdbg "        rename: eiface ${_name} found" 
     _last=$( ${SHOW} $_src:$_src_hook | ${HEAD} -n1 | ${TR} | ${CUT} -f 4 -d ' ' )
@@ -541,7 +592,7 @@ ezdbg "Loaded: ezng_rename_node()"
 
 ezng_not_in_graph () {
 
-  [ $(ngctl list  |grep "Type: ${2}" | grep "Name: ${1}" | wc -l) = '0' ] || return 0
+  [ $(ngctl list  |grep "Type: ${2}" | grep "Name: ${1} " | wc -l) = '0' ] || return 0
   ${ECHO} "Cannot continue, ${1} of type ${2} does yet exist. Exiting ... " 
   return 1
 
@@ -578,64 +629,26 @@ ezng_new_graph()
   _type1=$( ezng_split_on_colon $1 type )
   _type2=$( ezng_split_on_colon $2 type )
   _ngtmp=$( ${MKTEMP} )
-  if [ $(ezng_not_in_graph _node1 _type1) = 0 ] && [ $(ezng_not_in_graph _node2 _type2) = 0 ])
-    then 
-      _TMPND=$( ${ECHO} $_ngtmp | sed 's/.*tmp.//' )
-
-      cat > $_ngtmp << xxENDxx
-        mkpeer .: tee $_TMPND left2right
-        name   .:$_TMPND $TMPND
-        mkpeer $_TMPND: $_type1 left  $_hook1
-        mkpeer $_TMPND: $_type2 right $_hook2
+  (ezng_not_in_graph $_node1 $_type1 && ezng_not_in_graph $_node2 $_type2 ) || {
+    ${ECHO} "Something went wrong while creating new graph (ezng_not_in_graph failed). Exiting...";
+    return 1;
+  }
+  _TMPND=$( ${ECHO} $_ngtmp | sed 's/.*tmp.//' )
+  cat > $_ngtmp << xxENDxx
+    mkpeer .: tee $_TMPND left2right
+    name   .:$_TMPND $TMPND
+    mkpeer $_TMPND: $_type1 left  $_hook1
+    mkpeer $_TMPND: $_type2 right $_hook2
 xxENDxx
 
-      ${NGCTL} -f $_ngtmp
-      ezng_rename_node $TMPND left  $_type1 $_node1
-      ezng_rename_node $TMPND right $_type2 $_node2
-      ${SHUTDOWN} $_TMPND
-      ${RM} $_ngtmp
-      return 0
-    else
-      return 1
-  fi
+  ${NGCTL} -f $_ngtmp
+  ezng_rename_node $TMPND left  $_type1 $_node1
+  ezng_rename_node $TMPND right $_type2 $_node2
+  ${SHUTDOWN} $_TMPND
+  ${RM} $_ngtmp
 }
   
 ezdbg "Loaded: ezng_new_graph()"
-
-################################################################################
-#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
-##
-## This one creates a connection between two ng_eiface nodes by creating an 
-## ng_bridge in-between. Use ezng_new_peer() to add more eiface nodes (or whatever)
-## to the bridge.
-## 
-## Usage: ezng_switched_connection bridgename peername1 peername2 ...
-##
-#
-ezng_switched_connection()
-{
-  local _swtmp _br _iface _counter _tmpnode
-  _br=$1; shift
-  _counter=1
-  _swtmp=$( ${MKTEMP} )
-  _tmpnode=$( ${ECHO} $_swtmp | ${SED} 's/.*tmp.//' )
-  ${ECHO} "LEGACY WARNING: ezng_switched_connection() is considered to be removed without further notice. Do not use in production. Use ezng_connect instead." 
-  ezdbg "Trying: ezng_switched_connection $@"
-
-  ezng_connect $_br:link0:bridge $_tmpnode:ether:eiface
-
-  for _iface in $@ 
-  do
-    ezng_connect  $_br:link$_counter $_iface:ether:eiface
-    ezng_create_mac $_iface
-    _counter=$( ${EXPR} $_counter + 1 )
-  done
-
-  ${SHUTDOWN} $_tmpnode:
-  ${RM} $_swtmp
-}
-
-ezdbg "Loaded: ezng_switched_connection()"
 
 ################################################################################
 #....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
@@ -687,98 +700,13 @@ ezng_bpf_set()
   local _node _prog
   _node=$1
   _prog=$( ezng_create_bpf_prog "$2" )
-  ezdbg "Trying: ezng_bpf_modify_match $1 $2"
+  ezdbg "Trying: ezng_bpf_seT $1 $2"
   ${MSG} $_node: setprogram { thisHook=\"downstream\" \
                                ifMatch=\"match\"      \
                             ifNotMatch=\"nomatch\"    $_prog }
 }
 
 ezdbg "Loaded: ezng_bpf_set()"
-
-################################################################################
-#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
-##
-## Usage: ezng_bpf_create bpfname dsnode:dshk mnode:mhk:mtype nmnode:nmhk:nmtype
-#
-ezng_bpf_create()
-{
-  local _name _bpfdownstream _bpfprog   _match   _matchhook   _matchtype \
-                                      _nomatch _nomatchhook _nomatchtype
-  ezdbg "Trying: ezng_bpf_create $1 $2 $3 $4 $5"
-           _name=$1
-  _bpfdownstream=$2
-          _match=$( ezng_split_on_colon $3 "node" )
-      _matchhook=$( ezng_split_on_colon $3 "hook" )
-      _matchtype=$( ezng_split_on_colon $3 "type" )
-        _nomatch=$( ezng_split_on_colon $4 "node" )
-    _nomatchhook=$( ezng_split_on_colon $4 "hook" )
-    _nomatchtype=$( ezng_split_on_colon $4 "type" )
-
-  ${ECHO} "LEGACY WARNING: ezng_bpf_create() is considered to be removed without further notice. Do not use in production. Use ezng_connect and ezng_bpf_set instead."
-
-  ezng_connect  $_bpfdownstream  $_name:downstream:bpf
-  ezng_connect  $_name:match:bpf    $_match:$_matchhook:$_matchtype
-  ezng_new_peer $_name:nomatch:bpf   $_nomatch:$_nomatchhook:$_nomatchtype
-
-  ezng_bpf_init           $_name
-
-  ezdbg "Finished:  ezng_bpf_create $1 ..."
-}
-
-################################################################################
-#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
-##
-## Like ezng_bpf_create above, this routing integrates an ng_etf into the netgraph
-## netgraph. you might notice, that ETF has no need of initialization, as 
-## the node is installed with a usefull nomatch-policy
-##
-## Usage: ezng_etf_create <name> <ds:hk:type> <match:hk:type> <nomatch:hk:type> 
-#
-ezng_etf_create()
-{
-  local _name _etfdownstream _bpfprog   _match   _matchhook   _matchtype \
-                                      _nomatch _nomatchhook _nomatchtype
-  ezdbg "Trying: ezng_bpf_create $1 ..."
-           _name=$1
-  _etfdownstream=$2
-          _match=$( ezng_split_on_colon $3 "node" )
-      _matchhook=$( ezng_split_on_colon $3 "hook" )
-      _matchtype=$( ezng_split_on_colon $3 "type" )
-        _nomatch=$( ezng_split_on_colon $4 "node" )
-    _nomatchhook=$( ezng_split_on_colon $4 "hook" )
-    _nomatchtype=$( ezng_split_on_colon $4 "type" )
-
-  ${ECHO} "LEGACY WARNING: ezng_bpf_create() is considered to be removed without further notice. Do not use in production. Use ezng_connect and ezng_etf_set instead."
-
-  ezng_connect $_etfdownstream        $_name:downstream:etf
-  ezng_connect $_name:match:etf      $_match:$_matchhook:$_matchtype
-  ezng_connect $_name:nomatch:etf  $_nomatch:$_nomatchhook:$_nomatchtype 
-
-  ezdbg "Finished:  ezng_etf_create $1 ..."
-}
-
-ezdbg "Loaded: ezng_etf_create()"
-
-################################################################################
-#....0....1....0....2....0....1....0....4....0....1....0....2....0....1....0....
-##
-## Example to initialize filtering of ipv4 (i.e. ipv4=0x800 and arp=0x806)
-## ezng_etf_set etf_in 0x800 0x806
-##
-## Usage: ezng_etf_set <etfname> <list of ethertypes> 
-#
-ezng_etf_set()
-{
-  local _iface _ethertype
-  _etfname=$1
-  shift
-  for _ethertype in $@
-  do
-    ${MSG} $_etfname: setfilter { matchhook=\"match\" ethertype=$_ethertype }
-  done
-}
-
-ezdbg "Loaded: ezng_etf_init()"
 
 ezdbg "----- Finished loading ngctl.subr -----"
  
