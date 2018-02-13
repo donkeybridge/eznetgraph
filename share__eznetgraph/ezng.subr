@@ -95,10 +95,10 @@ EZNG_SUPPORTED="bpf bridge eiface ether hole socket tee"
 ## 
 #
 echo "" > /tmp/dbg
-ezdbg() {  test ${DEBUG:-0} -eq 1 && ${ECHO} "EZNG.SUBR ==> $1 " >> /tmp/dbg; }
+ezdbg() {  test ${DEBUG:-0} -eq 1 && ${ECHO} "EZNG.SUBR ==> $1 "; } # >> /tmp/dbg; }
 ezdbg "Loaded: ezdbg()"
 
-ezexit() { ezdbg "EXIT: $*"; echo -e "$*" >&2; exit 1; }
+ezexit() { ezdbg "EXIT: $*"; echo -e "$*" ; exit 1; }
 ezdbg "Loaded: ezexit()"
 
 ################################################################################
@@ -134,7 +134,6 @@ ezdbg "Loaded: ezng_delete_type()"
 
 ezng_valid_type() {
   local _type=$1
-  ezdbg "ezng_valid_type() Validating $_type"
   [ "${_type}" = "" ] && ezexit "Missing type while validating, exiting ..." 
   [ "${_type}" != "${EZNG_SUPPORTED%$_type*}" ] && return 0
   ezexit "Tried to add unsupported type ${1} to graph. Exiting......."
@@ -150,7 +149,7 @@ ezng_test_avail() {
   local _loaded=0
   local _module_path=$(${SYSCTL} -b kern.module_path)
 
-  ${TYPES}
+  ${TYPES} >/dev/null 2>&1
   [ $? != 0 ] && { 
     ezdbg "Netgraph support neither found in kernel nor as loaded modules, trying to load module now."; 
     _OLDIFS=$IFS; IFS=\; 
@@ -318,7 +317,6 @@ ezdbg "Loaded: ezng_create_mac()"
 #
 ezng_split_on_colon()
 {
-  ezdbg "SPLITTING $1 for $2"
   local _node _hook _type _TMP
 
   _TMP=$( ${MKTEMP} )
@@ -470,11 +468,8 @@ ezng_connect()
         _cpeer_hook=$( ezng_split_on_colon $2 hook )
         _cpeer_type=$( ezng_split_on_colon $2 type )
 
-  ezdbg " ... SRC: $_csrc:$_csrc_hook:$_csrc_type -> PEER: $_cpeer:$_cpeer_hook:$_cpeer_type"
-
        _csrc_exists=$( ezng_node_exists $_csrc ) 
       _cpeer_exists=$( ezng_node_exists $_cpeer)
-  ezdbg "_csrc_exists is $_csrc_exists, _cpeer_exists is $_cpeer_exists"
 
    _csrc_valid_hook=$( ezng_valid_hook  $_csrc   $_csrc_hook  $_csrc_type)
   _cpeer_valid_hook=$( ezng_valid_hook  $_cpeer $_cpeer_hook $_cpeer_type) 
@@ -700,7 +695,7 @@ ezng_bpf_set()
   local _node _prog
   _node=$1
   _prog=$( ezng_create_bpf_prog "$2" )
-  ezdbg "Trying: ezng_bpf_seT $1 $2"
+  ezdbg "Trying: ezng_bpf_set $1 $2"
   ${MSG} $_node: setprogram { thisHook=\"downstream\" \
                                ifMatch=\"match\"      \
                             ifNotMatch=\"nomatch\"    $_prog }
